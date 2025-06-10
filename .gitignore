@@ -1,0 +1,38 @@
+# Ignore Node.js dependencies folder
+node_modules/
+
+# Ignore macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Ignore common temporary files
+*.swp
+*~
+._*
+
+# Ignore files and folders from your ls -a output that are not part of the project
+.Aleks Uploader/
+.CFUserTextEncoding
+.Trash/
+.config/
+.cups/
+.cursor/
+.gphoto/
+.idlerc/
+.kindle/
+.lesshst
+.local/
+.npm/
+.oracle_jre_usage/
+.zprofile
+.zsh_history
+Applications/
+Documents/
+Library/
+Movies/
+Parallels/
+Public/
+Sites/
+Video-Host-Platform/
+the-funded-factory/
