@@ -1,19 +1,17 @@
 {
   "name": "trading-journal-mt5-backend",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "MetaTrader 5 Backend Service for Trading Journal Platform",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^16.5.0",
-    "express": "^5.1.0",
-    "metaapi.cloud-sdk": "^29.0.5",
-    "node-fetch": "^3.3.2"
+    "express": "^4.19.2",
+    "metaapi.cloud-sdk": "^29.0.5"
   }
 }
