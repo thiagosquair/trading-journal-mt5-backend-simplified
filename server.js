@@ -1,21 +1,68 @@
-// server.js
+// server.js - Alternative version without dotenv dependency
 const express = require('express');
 const cors = require('cors');
 const MetaApi = require('metaapi.cloud-sdk').default;
-require('dotenv').config();
 
 // Initialize Express app
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Initialize MetaAPI
+// Enhanced logging middleware
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${req.method} ${req.path}`, {
+    query: req.query,
+    body: req.method !== 'GET' ? req.body : undefined
+  });
+  next();
+});
+
+// Initialize MetaAPI - Railway provides environment variables directly
 const token = process.env.META_API_TOKEN;
+
+if (!token) {
+  console.error('ERROR: META_API_TOKEN environment variable is not set');
+  process.exit(1);
+}
+
+console.log('Initializing MetaApi with token:', token.substring(0, 10) + '...');
 const api = new MetaApi(token);
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', message: 'MT5 Backend Service is running' });
+// Enhanced health check endpoint
+app.get('/health', async (req, res) => {
+  const health = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    environment: {
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      hasMetaApiToken: !!token
+    },
+    services: {}
+  };
+  
+  // Check MetaApi connectivity
+  try {
+    const accounts = await api.metatraderAccountApi.getAccounts();
+    health.services.metaapi = {
+      status: 'connected',
+      accountCount: accounts.length
+    };
+  } catch (error) {
+    console.error('MetaApi health check failed:', error);
+    health.services.metaapi = {
+      status: 'error',
+      message: error.message
+    };
+  }
+  
+  const hasErrors = Object.values(health.services).some(service => service.status === 'error');
+  
+  res.status(hasErrors ? 503 : 200).json(health);
 });
 
 // Connect to MT5 account endpoint
@@ -35,7 +82,6 @@ app.post('/api/mt5/connect', async (req, res) => {
     // Check if account already exists
     let account;
     try {
-      // Try to find existing account
       const accounts = await api.metatraderAccountApi.getAccounts();
       account = accounts.find(acc => 
         acc.login === login.toString() && 
@@ -52,15 +98,23 @@ app.post('/api/mt5/connect', async (req, res) => {
     // If account doesn't exist, create it
     if (!account) {
       console.log('Creating new MT5 account connection');
-      account = await api.metatraderAccountApi.createAccount({
-        name: `MT5 Account ${login}`,
-        type: 'cloud',
-        login: login.toString(),
-        password,
-        server,
-        platform: 'mt5'
-      });
-      console.log(`Created new account with id: ${account.id}`);
+      try {
+        account = await api.metatraderAccountApi.createAccount({
+          name: `MT5 Account ${login}`,
+          type: 'cloud',
+          login: login.toString(),
+          password,
+          server,
+          platform: 'mt5'
+        });
+        console.log(`Created new account with id: ${account.id}`);
+      } catch (createError) {
+        console.error('Error creating account:', createError);
+        return res.status(500).json({ 
+          success: false, 
+          error: `Failed to create account: ${createError.message}` 
+        });
+      }
     }
     
     // Deploy and connect to the account
@@ -90,7 +144,7 @@ app.post('/api/mt5/connect', async (req, res) => {
       console.error('Error connecting to account:', connectionError);
       return res.status(500).json({ 
         success: false, 
-        error: connectionError.message || 'Failed to connect to MT5 account' 
+        error: `Connection failed: ${connectionError.message}` 
       });
     }
   } catch (error) {
@@ -102,75 +156,159 @@ app.post('/api/mt5/connect', async (req, res) => {
   }
 });
 
-// Get account information endpoint
-app.get('/api/mt5/account-info/:accountId', async (req, res) => {
+// Get account information endpoint with enhanced error handling
+app.get('/api/mt5/account-info', async (req, res) => {
   try {
-    const { accountId } = req.params;
+    const { accountId } = req.query;
     
     if (!accountId) {
-      return res.status(400).json({ error: 'Account ID is required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Account ID is required as query parameter' 
+      });
     }
     
     console.log(`Getting account info for: ${accountId}`);
     
-    // Get the account
-    const account = await api.metatraderAccountApi.getAccount(accountId);
-    
-    if (!account) {
-      return res.status(404).json({ error: 'Account not found' });
+    // Get the account with detailed error logging
+    let account;
+    try {
+      account = await api.metatraderAccountApi.getAccount(accountId);
+    } catch (apiError) {
+      console.error('MetaApi getAccount error:', {
+        message: apiError.message,
+        stack: apiError.stack
+      });
+      return res.status(500).json({ 
+        success: false,
+        error: `Failed to retrieve account: ${apiError.message}` 
+      });
     }
     
-    // Check if account is connected
+    if (!account) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Account not found' 
+      });
+    }
+    
+    // Check connection status
     if (!account.connected) {
-      return res.status(400).json({ error: 'Account is not connected' });
+      console.log('Account not connected, attempting to connect...');
+      try {
+        if (!account.deployed) {
+          await account.deploy();
+        }
+        await account.waitConnected(30);
+      } catch (connectionError) {
+        console.error('Connection timeout:', connectionError);
+        return res.status(400).json({ 
+          success: false,
+          error: `Account connection failed: ${connectionError.message}` 
+        });
+      }
     }
     
     // Get account information
-    const connection = account.getRPCConnection();
-    const accountInfo = await connection.getAccountInformation();
+    let accountInfo;
+    try {
+      const connection = account.getRPCConnection();
+      accountInfo = await connection.getAccountInformation();
+    } catch (infoError) {
+      console.error('Account info retrieval error:', {
+        message: infoError.message,
+        stack: infoError.stack
+      });
+      return res.status(500).json({ 
+        success: false,
+        error: `Failed to get account information: ${infoError.message}` 
+      });
+    }
     
     return res.json({
       success: true,
       ...accountInfo,
       message: 'Account information retrieved successfully'
     });
+    
   } catch (error) {
-    console.error('Error getting account info:', error);
-    return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
+    console.error('Unexpected error in account-info endpoint:', {
+      message: error.message,
+      stack: error.stack
+    });
+    return res.status(500).json({ 
+      success: false,
+      error: 'An unexpected error occurred' 
+    });
   }
 });
 
-// Get trading history endpoint
-app.get('/api/mt5/history/:accountId', async (req, res) => {
+// Get trading history endpoint with enhanced error handling
+app.get('/api/mt5/history', async (req, res) => {
   try {
-    const { accountId } = req.params;
-    const { startTime, endTime, limit } = req.query;
+    const { accountId, startDate, endDate } = req.query;
     
     if (!accountId) {
-      return res.status(400).json({ error: 'Account ID is required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Account ID is required as query parameter' 
+      });
     }
     
     console.log(`Getting trading history for: ${accountId}`);
     
     // Get the account
-    const account = await api.metatraderAccountApi.getAccount(accountId);
+    let account;
+    try {
+      account = await api.metatraderAccountApi.getAccount(accountId);
+    } catch (apiError) {
+      console.error('MetaApi getAccount error:', apiError);
+      return res.status(500).json({ 
+        success: false,
+        error: `Failed to retrieve account: ${apiError.message}` 
+      });
+    }
     
     if (!account) {
-      return res.status(404).json({ error: 'Account not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Account not found' 
+      });
     }
     
     // Check if account is connected
     if (!account.connected) {
-      return res.status(400).json({ error: 'Account is not connected' });
+      console.log('Account not connected, attempting to connect...');
+      try {
+        if (!account.deployed) {
+          await account.deploy();
+        }
+        await account.waitConnected(30);
+      } catch (connectionError) {
+        console.error('Connection timeout:', connectionError);
+        return res.status(400).json({ 
+          success: false,
+          error: `Account connection failed: ${connectionError.message}` 
+        });
+      }
     }
     
     // Get trading history
-    const connection = account.getRPCConnection();
-    const history = await connection.getHistoryOrdersByTimeRange({
-      startTime: startTime ? new Date(startTime) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Default to last 30 days
-      endTime: endTime ? new Date(endTime) : new Date(),
-      limit: limit ? parseInt(limit) : 1000
-    });
+    let history;
+    try {
+      const connection = account.getRPCConnection();
+      history = await connection.getHistoryOrdersByTimeRange({
+        startTime: startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+        endTime: endDate ? new Date(endDate) : new Date(),
+        limit: 1000
+      });
+    } catch (historyError) {
+      console.error('History retrieval error:', historyError);
+      return res.status(500).json({ 
+        success: false,
+        error: `Failed to get trading history: ${historyError.message}` 
+      });
+    }
     
     return res.json({
       success: true,
@@ -178,44 +316,84 @@ app.get('/api/mt5/history/:accountId', async (req, res) => {
       message: 'Trading history retrieved successfully'
     });
   } catch (error) {
-    console.error('Error getting trading history:', error);
-    return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
+    console.error('Unexpected error in history endpoint:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: 'An unexpected error occurred' 
+    });
   }
 });
 
 // Disconnect from MT5 account endpoint
-app.post('/api/mt5/disconnect/:accountId', async (req, res) => {
+app.post('/api/mt5/disconnect', async (req, res) => {
   try {
-    const { accountId } = req.params;
+    const { accountId } = req.body;
     
     if (!accountId) {
-      return res.status(400).json({ error: 'Account ID is required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Account ID is required' 
+      });
     }
     
     console.log(`Disconnecting account: ${accountId}`);
     
     // Get the account
-    const account = await api.metatraderAccountApi.getAccount(accountId);
+    let account;
+    try {
+      account = await api.metatraderAccountApi.getAccount(accountId);
+    } catch (apiError) {
+      console.error('MetaApi getAccount error:', apiError);
+      return res.status(500).json({ 
+        success: false,
+        error: `Failed to retrieve account: ${apiError.message}` 
+      });
+    }
     
     if (!account) {
-      return res.status(404).json({ error: 'Account not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Account not found' 
+      });
     }
     
     // Undeploy the account
-    await account.undeploy();
+    try {
+      await account.undeploy();
+    } catch (undeployError) {
+      console.error('Undeploy error:', undeployError);
+      return res.status(500).json({ 
+        success: false,
+        error: `Failed to disconnect: ${undeployError.message}` 
+      });
+    }
     
     return res.json({
       success: true,
       message: 'Disconnected from MT5 account successfully'
     });
   } catch (error) {
-    console.error('Error disconnecting account:', error);
-    return res.status(500).json({ error: error.message || 'An unexpected error occurred' });
+    console.error('Unexpected error in disconnect endpoint:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: 'An unexpected error occurred' 
+    });
   }
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error'
+  });
 });
 
 // Start server
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`MT5 Backend Service running on port ${PORT}`);
+  console.log(`Health check available at: http://localhost:${PORT}/health`);
 });
+
