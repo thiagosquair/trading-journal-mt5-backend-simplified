@@ -1,12 +1,4 @@
 {
-
-  "dependencies": {
-    "dotenv": "^16.5.0",
-    "lightweight-charts": "^5.0.7",
-    "mongodb": "^6.16.0"
-  }
-}
-=======
   "name": "trading-journal-mt5-backend",
   "version": "1.0.0",
   "description": "MetaTrader 5 Backend Service for Trading Journal Platform",
@@ -21,8 +13,7 @@
   "dependencies": {
     "express": "^4.19.2",
     "metaapi.cloud-sdk": "^29.0.5",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0"
   }
 }
-
-
